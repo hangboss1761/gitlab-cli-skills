@@ -1,324 +1,144 @@
 ---
 name: gitlab-cli-skills
-description: Comprehensive GitLab CLI (glab) command reference and workflows for all GitLab operations via terminal. Use when user mentions GitLab CLI, glab commands, GitLab automation, MR/issue management via CLI, CI/CD pipeline commands, repo operations, authentication setup, or any GitLab terminal operations. Routes to specialized sub-skills for auth, CI, MRs, issues, releases, repos, and 30+ other glab commands. Triggers on glab, GitLab CLI, GitLab commands, GitLab terminal, GitLab automation.
-metadata: {"openclaw": {"requires": {"bins": ["glab"], "anyBins": ["cosign"]}, "install": [{"id": "brew", "kind": "brew", "formula": "glab", "bins": ["glab"], "label": "Install glab (brew)"}, {"id": "download", "kind": "download", "url": "https://gitlab.com/gitlab-org/cli/-/releases", "label": "Download glab binary"}]}}
-requirements:
-  binaries:
-    - glab
-  binaries_optional:
-    - cosign
-  notes: |
-    Requires GitLab authentication via 'glab auth login' (stores token in ~/.config/glab-cli/config.yml).
-    Some features may access sensitive files: SSH keys (~/.ssh/id_rsa for DPoP), Docker config (~/.docker/config.json for registry auth).
-    Review auth workflows and script contents before autonomous use.
-openclaw:
-  requires:
-    credentials:
-      - name: GITLAB_TOKEN
-        description: >
-          GitLab personal access token with 'api' scope. Used by automation
-          scripts (e.g. post-inline-comment.py) to post MR comments via the
-          REST API. If not set, scripts fall back to reading the token from
-          glab CLI config (~/.config/glab-cli/config.yml).
-        required: false
-        fallback: glab config (set via glab auth login)
-    network:
-      - description: Outbound HTTPS to your GitLab instance (default https://gitlab.com)
-        scope: authenticated API calls only; HTTPS enforced; token never sent over HTTP
-    write_access:
-      - description: >
-          Scripts in this skill can post comments, resolve threads, and approve
-          merge requests on your behalf. Review scripts/post-inline-comment.py
-          before use in automated or agentic contexts.
+description: GitLab CLI (glab) workflows for authentication, tokens, merge requests, issues, repositories, configuration, and REST API. Use when user mentions GitLab CLI, glab, login, auth, PAT, access token, MR, merge request, issue, repo, clone, fork, or GitLab terminal automation. Triggers on glab, GitLab CLI, authentication, credentials, token, MR, issue, repository.
 ---
 
 # GitLab CLI Skills
 
-Comprehensive GitLab CLI (glab) command reference and workflows.
+Single skill for GitLab CLI (`glab`): auth, tokens, MR, issue, repo, config, and API. Detailed docs live in `references/` — read only what the task needs.
+
+## Prerequisites
+
+- Install [glab](https://gitlab.com/gitlab-org/cli/-/releases) (`brew install glab` on macOS)
+- Authenticate: `glab auth login` (token stored in `~/.config/glab-cli/config.yml`)
+- Review script contents before running them in automated workflows
 
 ## Quick start
 
 ```bash
 # First time setup
 glab auth login
+glab auth status
 
 # Common operations
 glab mr create --fill              # Create MR from current branch
 glab issue create                  # Create issue
-glab ci view                       # View pipeline status
-glab repo view --web              # Open repo in browser
+glab repo view --web               # Open repo in browser
+glab config set editor vim         # Set CLI defaults
 ```
 
-## Multi-agent identity note
+## Reference routing
 
-When you want different agents to appear as different GitLab users, give each agent its own GitLab bot/service account. Multiple personal access tokens on the same GitLab user still act as that same visible identity.
+| Task | Read first |
+|------|------------|
+| Login, logout, multi-account, Docker registry auth | [references/auth.md](references/auth.md) |
+| Create, list, revoke, rotate PAT / project tokens | [references/token.md](references/token.md) |
+| MR create, review, approve, merge, inline comments | [references/mr.md](references/mr.md) |
+| Issue create, list, update, close, comment | [references/issue.md](references/issue.md) |
+| Clone, fork, create repo, members | [references/repo.md](references/repo.md) |
+| CLI defaults, `glab config` get/set | [references/config.md](references/config.md) |
+| Custom REST/GraphQL when no glab subcommand | [references/api.md](references/api.md) |
+| Full subcommand flags (`--help` dumps) | [references/commands/](references/commands/) |
 
-Use the **Actor identity** for actor-authored GitLab comments, replies, approvals, and other writes. Use an **agent identity** only when the GitLab action is explicitly that agent's own work product. Choose the intended visible actor **before the first GitLab write**.
+## Automation scripts
 
-Treat shell identity as sticky and unsafe by default. If another env file was sourced earlier in the same shell/session, `glab` may still write as that previously loaded identity unless you deliberately switch and verify first.
+| Script | Purpose |
+|--------|---------|
+| [scripts/create-mr-from-issue.sh](scripts/create-mr-from-issue.sh) | Branch from issue title; optional draft MR |
+| [scripts/sync-fork.sh](scripts/sync-fork.sh) | Sync fork with upstream |
 
-A practical pattern is one env file per actor, for example `~/.config/openclaw/env/gitlab-actor.env`, `~/.config/openclaw/env/gitlab-reviewer.env`, and `~/.config/openclaw/env/gitlab-release.env`. Keep these env files outside version control, restrict their permissions (for example `chmod 600`), be mindful of backup exposure, and use least-privilege bot/service-account tokens. In a reused shell, clear stale GitLab auth vars first or start a fresh shell. If those files use plain `KEY=value` lines, load them with exported vars before running `glab`:
+See [scripts/README.md](scripts/README.md) for usage examples.
+
+## Multi-account identity
+
+When automation must post as different GitLab users, use separate bot/service accounts (one PAT per account). Multiple tokens on the same GitLab user still appear as that same user.
+
+Pick the intended account **before the first GitLab write**. See [references/auth.md](references/auth.md) for env-file layout and wrong-identity recovery.
 
 ```bash
 unset GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GITLAB_HOST
 set -a
-source ~/.config/openclaw/env/gitlab-<actor>.env
+source ~/.config/gitlab-cli/env/<account>.env
 set +a
 ```
 
-Plain `source` updates the current shell but may not export variables to child processes such as `glab`. If the token/host vars are not exported, `glab` may silently fall back to shared stored auth from `~/.config/glab-cli/config.yml`, which can make the wrong account appear to perform the action.
-
 ### Required pre-flight before any GitLab write
-
-Run this immediately before any GitLab write, including `glab mr note`, review replies/approvals, and any `glab api` `POST`/`PATCH`/`PUT`/`DELETE` call:
 
 ```bash
 glab auth status --hostname "$GITLAB_HOST"
 glab api --hostname "$GITLAB_HOST" user
 ```
 
-This assumes the target actor env file set `GITLAB_HOST` for the exact GitLab instance you intend to modify. Do not write until both commands clearly show the intended visible actor on that host.
-
-### Wrong-identity remediation
-
-If a comment or reply was posted under the wrong identity:
-
-1. Stop posting.
-2. Delete the mistaken comment or reply if cleanup is needed.
-3. `unset GITLAB_TOKEN GITLAB_ACCESS_TOKEN OAUTH_TOKEN GITLAB_HOST` or start a fresh shell.
-4. Source the correct env file with `set -a; source ...; set +a`.
-5. Rerun `glab auth status --hostname "$GITLAB_HOST"` and `glab api --hostname "$GITLAB_HOST" user`.
-6. Repost under the correct actor.
-7. Verify the thread no longer shows the wrong visible author for the replacement message.
-
-If the wrong-identity write changed state beyond a comment or reply, do not treat the comment cleanup steps as sufficient. Re-auth as above, then use the matching GitLab reversal for that write under the correct actor and host, such as unapproving an MR or sending the compensating `glab api --hostname "$GITLAB_HOST"` mutation for the exact resource that was changed.
-
-## Skill organization
-
-This skill routes to specialized sub-skills by GitLab domain:
-
-**Core Workflows:**
-- `glab-mr` - Merge requests: create, review, approve, merge
-- `glab-issue` - Issues: create, list, update, close, comment
-- `glab-ci` - CI/CD: pipelines, jobs, logs, artifacts
-- `glab-repo` - Repositories: clone, create, fork, manage
-
-**Project Management:**
-- `glab-milestone` - Release planning and milestone tracking
-- `glab-iteration` - Sprint/iteration management
-- `glab-label` - Label management and organization
-- `glab-release` - Software releases and versioning
-
-**Authentication & Config:**
-- `glab-auth` - Login, logout, Docker registry auth
-- `glab-config` - CLI configuration and defaults
-- `glab-ssh-key` - SSH key management
-- `glab-gpg-key` - GPG keys for commit signing
-- `glab-token` - Personal and project access tokens
-- `glab-todo` - Personal GitLab to-do triage and completion
-
-**CI/CD Management:**
-- `glab-job` - Individual job operations
-- `glab-schedule` - Scheduled pipelines and cron jobs
-- `glab-variable` - CI/CD variables and secrets
-- `glab-securefile` - Secure files for pipelines
-- `glab-runner` - Runner management: list, assign/unassign, inspect jobs/managers, pause/unpause, delete
-- `glab-runner-controller` - Runner controller, scope, and token management (EXPERIMENTAL, admin-only)
-
-**Collaboration:**
-- `glab-user` - User profiles and information
-- `glab-snippet` - Code snippets (GitLab gists)
-- `glab-incident` - Incident management
-- `glab-workitems` - Work items: tasks, OKRs, key results, next-gen epics
-
-**Advanced:**
-- `glab-api` - Direct REST API calls
-- `glab-cluster` - Kubernetes cluster integration
-- `glab-deploy-key` - Deploy keys for automation
-- `glab-orbit` - GitLab Knowledge Graph / Orbit discovery, schema inspection, and remote query workflows (EXPERIMENTAL)
-- `glab-quick-actions` - GitLab slash command quick actions for batching state changes
-- `glab-stack` - Stacked/dependent merge requests
-- `glab-opentofu` - Terraform/OpenTofu state management
-
-**Utilities:**
-- `glab-alias` - Custom command aliases
-- `glab-completion` - Shell autocompletion
-- `glab-help` - Command help and documentation
-- `glab-version` - Version information
-- `glab-check-update` - Update checker
-- `glab-changelog` - Changelog generation
-- `glab-attestation` - Software supply chain security
-- `glab-duo` - GitLab Duo AI assistant
-- `glab-mcp` - Model Context Protocol server for AI assistant integration (EXPERIMENTAL)
-- `glab-skills` - Install and manage bundled agent skills (EXPERIMENTAL)
+Do not write until both commands show the intended actor on the target host. See [references/auth.md](references/auth.md) for wrong-identity remediation.
 
 ## When to use glab vs web UI
 
-**Use glab when:**
-- Automating GitLab operations in scripts
-- Working in terminal-centric workflows
-- Batch operations (multiple MRs/issues)
-- Integration with other CLI tools
-- CI/CD pipeline workflows
-- Faster navigation without browser context switching
+**Use glab:** automation, terminal workflows, batch MR/issue ops, script integration.
 
-**Use web UI when:**
-- Complex diff review with inline comments
-- Visual merge conflict resolution
-- Configuring repo settings and permissions
-- Advanced search/filtering across projects
-- Reviewing security scanning results
-- Managing group/instance-level settings
+**Use web UI:** complex inline diff review, visual conflict resolution, group/instance settings.
 
 ## Common workflows
 
 ### Daily development
 
 ```bash
-# Start work on issue
 glab issue view 123
 git checkout -b 123-feature-name
-
-# Create MR when ready
 glab mr create --fill --draft
-
-# Mark ready for review
 glab mr update --ready
-
-# Merge after approval
 glab mr merge --when-pipeline-succeeds --remove-source-branch
 ```
 
 ### Code review
 
 ```bash
-# List your review queue
 glab mr list --reviewer=@me --state=opened
-
-# Review an MR
 glab mr checkout 456
 glab mr diff
-npm test
-
-# Approve
 glab mr approve 456
-glab mr note 456 -m "LGTM! Nice work on the error handling."
 ```
 
-### CI/CD debugging
+### Auth and tokens
 
 ```bash
-# Check pipeline status
-glab ci status
-
-# View failed jobs
-glab ci view
-
-# Get job logs
-glab ci trace <job-id>
-
-# Retry failed job
-glab ci retry <job-id>
+glab auth login --hostname gitlab.com --web
+glab token create my-automation-token --scopes api,read_repository
 ```
 
-## Decision Trees
+See [references/auth.md](references/auth.md) and [references/token.md](references/token.md).
 
-### "Should I create an MR or work on an issue first?"
+### Repository setup
+
+```bash
+glab repo clone group/project
+glab repo fork group/project --clone
+./scripts/sync-fork.sh
+```
+
+## Decision trees
+
+### MR or issue first?
 
 ```
 Need to track work?
-├─ Yes → Create issue first (glab issue create)
-│         Then: glab mr for <issue-id>
-└─ No → Direct MR (glab mr create --fill)
+├─ Yes → glab issue create → glab mr for <issue-id>
+└─ No → glab mr create --fill
 ```
 
-**Use `glab issue create` + `glab mr for` when:**
-- Work needs discussion/approval before coding
-- Tracking feature requests or bugs
-- Sprint planning and assignment
-- Want issue to auto-close when MR merges
-
-**Use `glab mr create` directly when:**
-- Quick fixes or typos
-- Working from existing issue
-- Hotfixes or urgent changes
-
-### "Which CI command should I use?"
+### Clone or fork?
 
 ```
-What do you need?
-├─ Overall pipeline status → glab ci status
-├─ Visual pipeline view → glab ci view
-├─ Specific job logs → glab ci trace <job-id>
-├─ Download build artifacts → glab ci artifact <ref> <job-name>
-├─ Validate config file → glab ci lint
-├─ Trigger new run → glab ci run
-└─ List all pipelines → glab ci list
+Have write access? → glab repo clone
+Contributing without write access? → glab repo fork --clone → ./scripts/sync-fork.sh
 ```
 
-**Quick reference:**
-- Pipeline-level: `glab ci status`, `glab ci view`, `glab ci run`
-- Job-level: `glab ci trace`, `glab job retry`, `glab job view`
-- Artifacts: `glab ci artifact` (by pipeline) or job artifacts via `glab job`
-
-### "Clone or fork?"
+### glab subcommand or REST API?
 
 ```
-What's your relationship to the repo?
-├─ You have write access → glab repo clone group/project
-├─ Contributing to someone else's project:
-│   ├─ One-time contribution → glab repo fork + work + MR
-│   └─ Ongoing contributions → glab repo fork, then sync regularly
-└─ Just reading/exploring → glab repo clone (or view --web)
+glab has subcommand (mr/issue/repo/auth/config)? → use it
+Otherwise → glab api <endpoint>  (see references/api.md)
 ```
 
-**Fork when:**
-- You don't have write access to the original repo
-- Contributing to open source projects
-- Experimenting without affecting the original
-- Need your own copy for long-term work
+## Progressive disclosure
 
-**Clone when:**
-- You're a project member with write access
-- Working on organization/team repositories
-- No need for a personal copy
-
-### "Project vs group labels?"
-
-```
-Where should the label live?
-├─ Used across multiple projects → glab label create --group <group>
-└─ Specific to one project → glab label create (in project directory)
-```
-
-**Group-level labels:**
-- Consistent labeling across organization
-- Examples: priority::high, type::bug, status::blocked
-- Managed centrally, inherited by projects
-
-**Project-level labels:**
-- Project-specific workflows
-- Examples: needs-ux-review, deploy-to-staging
-- Managed by project maintainers
-
-## Related Skills
-
-**MR and Issue workflows:**
-- Start with `glab-issue` to create/track work
-- Use `glab-mr` to create MR that closes issue
-- Script: `scripts/create-mr-from-issue.sh` automates this
-
-**CI/CD debugging:**
-- Use `glab-ci` for pipeline-level operations
-- Use `glab-job` for individual job operations
-- Script: `scripts/ci-debug.sh` for quick failure diagnosis
-
-**Repository operations:**
-- Use `glab-repo` for repository management
-- Use `glab-auth` for authentication setup
-- Script: `scripts/sync-fork.sh` for fork synchronization
-
-**Configuration:**
-- Use `glab-auth` for initial authentication
-- Use `glab-config` to set defaults and preferences
-- Use `glab-alias` for custom shortcuts
+Keep this file for routing and high-frequency flows. For long workflows (MR inline notes, auth troubleshooting, full flag lists), open the linked `references/*.md` file — do not load all references at once.
